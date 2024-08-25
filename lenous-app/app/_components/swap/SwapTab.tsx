@@ -22,7 +22,7 @@ import {
   SwapRouter,
   SwapOptions,
 } from '@uniswap/v3-sdk';
-import { ethers as ethersv5 } from 'ethersv5';
+import { ethers } from 'ethers';
 import { useEthersProvider, useEthersSigner } from '@/app/_libs/utils/ethers';
 import { useAccount } from 'wagmi';
 import Quoter from '@uniswap/v3-periphery/artifacts/contracts/lens/Quoter.sol/Quoter.json';
@@ -175,8 +175,8 @@ const SwapTab = () => {
   function fromReadableAmount(
     amount: number,
     decimals: number
-  ): ethersv5.BigNumber {
-    return ethersv5.utils.parseUnits(amount.toString(), decimals);
+  ): ethers.BigNumber {
+    return ethers.utils.parseUnits(amount.toString(), decimals);
   }
   const executeSwap = async () => {
     if (!signer || !provider) {
@@ -209,7 +209,7 @@ const SwapTab = () => {
     }
     console.log(IUniswapV3PoolABI.abi);
     console.log('Pool Address:', poolAddress);
-    const poolContract = new ethersv5.Contract(
+    const poolContract = new ethers.Contract(
       poolAddress,
       IUniswapV3PoolABI.abi,
       provider
@@ -236,7 +236,7 @@ const SwapTab = () => {
     console.log(route);
     const QUOTER_CONTRACT_ADDRESS =
       '0xb27308f9F90D607463bb33eA1BeBb41C27CE5AB6';
-    const quoterContract = new ethersv5.Contract(
+    const quoterContract = new ethers.Contract(
       QUOTER_CONTRACT_ADDRESS,
       Quoter.abi,
       provider
