@@ -1,6 +1,6 @@
 'use client';
 import React, { useState } from 'react';
-import PositionTable from '../share/PositionTable';
+import PositionTable from './positions/PositionTable';
 import Icon from '../UI/icon';
 
 export default function TradeTabs() {
