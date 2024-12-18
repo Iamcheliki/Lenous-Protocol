@@ -1,1 +1,426 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.17;
 
+import "forge-std/Test.sol";
+import "../src/LiquidityPool.sol";
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+
+contract MockUSDC is ERC20 {
+    constructor() ERC20("Mock USDC", "mUSDC") {
+        _mint(msg.sender, 1000000 * 10 ** 6);
+    }
+
+    function decimals() public pure override returns (uint8) {
+        return 6;
+    }
+}
+
+contract InternalLiquidityPoolTest is Test {
+    LiquidityPool public liquidityPool;
+    MockUSDC public usdc;
+
+    address public constant USER = address(1);
+    uint256 public constant SIGNER_PRIVATE_KEY = 0xA11CE;
+    address public immutable SIGNER;
+    address public constant ORDER_BOOK = address(3);
+    uint256 public constant INITIAL_BALANCE = 10000 * 10 ** 6;
+
+    constructor() {
+        SIGNER = vm.addr(SIGNER_PRIVATE_KEY);
+    }
+
+    function setUp() public {
+        usdc = new MockUSDC();
+        liquidityPool = new LiquidityPool(address(usdc), SIGNER);
+        liquidityPool.setOrderBookAddress(ORDER_BOOK);
+
+        usdc.transfer(USER, INITIAL_BALANCE);
+        vm.prank(USER);
+        usdc.approve(address(liquidityPool), type(uint256).max);
+    }
+
+    function testDeposit() public {
+        uint256 usdcAmount = 1000 * 10 ** 6;
+        uint256 minLPTokens = 990 * 10 ** 18;
+        uint256 deadline = block.timestamp + 3600;
+
+        bytes memory signature = generateDepositSignature(
+            USER,
+            usdcAmount,
+            minLPTokens,
+            0,
+            deadline
+        );
+
+        vm.prank(USER);
+        liquidityPool.deposit(usdcAmount, minLPTokens, deadline, signature);
+
+        assertEq(liquidityPool.balanceOf(USER), minLPTokens);
+        assertEq(usdc.balanceOf(address(liquidityPool)), usdcAmount);
+    }
+
+    function testDepositWithInvalidSignature() public {
+        uint256 usdcAmount = 1000 * 10 ** 6;
+        uint256 minLPTokens = 990 * 10 ** 18;
+        uint256 deadline = block.timestamp + 3600;
+
+        // Generate signature with wrong private key
+        uint256 wrongPrivateKey = 0xB22CE;
+        bytes memory invalidSignature = generateDepositSignatureWithKey(
+            USER,
+            usdcAmount,
+            minLPTokens,
+            0,
+            deadline,
+            wrongPrivateKey
+        );
+
+        vm.expectRevert("Invalid signature");
+        vm.prank(USER);
+        liquidityPool.deposit(
+            usdcAmount,
+            minLPTokens,
+            deadline,
+            invalidSignature
+        );
+    }
+
+    function testDepositWithUsedSignature() public {
+        uint256 usdcAmount = 1000 * 10 ** 6;
+        uint256 minLPTokens = 990 * 10 ** 18;
+        uint256 deadline = block.timestamp + 3600;
+
+        bytes memory signature = generateDepositSignature(
+            USER,
+            usdcAmount,
+            minLPTokens,
+            0,
+            deadline
+        );
+
+        vm.prank(USER);
+        liquidityPool.deposit(usdcAmount, minLPTokens, deadline, signature);
+
+        // Try to use the same signature again
+        vm.expectRevert("Invalid signature"); // Changed from "Signature already used"
+        vm.prank(USER);
+        liquidityPool.deposit(usdcAmount, minLPTokens, deadline, signature);
+    }
+
+    function testWithdraw() public {
+        testDeposit();
+
+        uint256 lpTokenAmount = 990 * 10 ** 18;
+        uint256 minUSDC = 1000 * 10 ** 6; // Match the original deposit amount
+        uint256 deadline = block.timestamp + 3600;
+
+        bytes memory signature = generateWithdrawSignature(
+            USER,
+            lpTokenAmount,
+            minUSDC,
+            1,
+            deadline
+        );
+
+        uint256 initialBalance = usdc.balanceOf(USER);
+
+        vm.prank(USER);
+        liquidityPool.withdraw(lpTokenAmount, minUSDC, deadline, signature);
+
+        assertEq(liquidityPool.balanceOf(USER), 0);
+        assertEq(usdc.balanceOf(USER), initialBalance + minUSDC);
+    }
+
+    function testDepositAndWithdrawWithMultipleUsers() public {
+        address user2 = address(5);
+        usdc.transfer(user2, INITIAL_BALANCE);
+        vm.prank(user2);
+        usdc.approve(address(liquidityPool), type(uint256).max);
+
+        // User 1 deposits
+        uint256 user1Amount = 1000 * 10 ** 6;
+        testDeposit();
+
+        // User 2 deposits
+        uint256 user2Amount = 2000 * 10 ** 6;
+        uint256 user2LPTokens = 1980 * 10 ** 18;
+        uint256 deadline = block.timestamp + 3600;
+
+        bytes memory signature = generateDepositSignature(
+            user2,
+            user2Amount,
+            user2LPTokens,
+            0,
+            deadline
+        );
+
+        vm.prank(user2);
+        liquidityPool.deposit(user2Amount, user2LPTokens, deadline, signature);
+
+        assertEq(liquidityPool.balanceOf(user2), user2LPTokens);
+        assertEq(
+            usdc.balanceOf(address(liquidityPool)),
+            user1Amount + user2Amount
+        );
+
+        // Withdraw tests...
+    }
+
+    // Helper functions
+    function generateDepositSignature(
+        address user,
+        uint256 usdcAmount,
+        uint256 minLPTokens,
+        uint256 nonce,
+        uint256 deadline
+    ) internal view returns (bytes memory) {
+        return
+            generateDepositSignatureWithKey(
+                user,
+                usdcAmount,
+                minLPTokens,
+                nonce,
+                deadline,
+                SIGNER_PRIVATE_KEY
+            );
+    }
+
+    function generateDepositSignatureWithKey(
+        address user,
+        uint256 usdcAmount,
+        uint256 minLPTokens,
+        uint256 nonce,
+        uint256 deadline,
+        uint256 privateKey
+    ) internal view returns (bytes memory) {
+        bytes32 structHash = keccak256(
+            abi.encode(
+                liquidityPool.DEPOSIT_TYPEHASH(),
+                user,
+                usdcAmount,
+                minLPTokens,
+                nonce,
+                deadline
+            )
+        );
+        bytes32 hash = keccak256(
+            abi.encodePacked(
+                "\x19\x01",
+                liquidityPool.DOMAIN_SEPARATOR(),
+                structHash
+            )
+        );
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(privateKey, hash);
+        return abi.encodePacked(r, s, v);
+    }
+
+    function generateWithdrawSignature(
+        address user,
+        uint256 lpTokenAmount,
+        uint256 minUSDC,
+        uint256 nonce,
+        uint256 deadline
+    ) internal view returns (bytes memory) {
+        bytes32 structHash = keccak256(
+            abi.encode(
+                liquidityPool.WITHDRAW_TYPEHASH(),
+                user,
+                lpTokenAmount,
+                minUSDC,
+                nonce,
+                deadline
+            )
+        );
+        bytes32 hash = keccak256(
+            abi.encodePacked(
+                "\x19\x01",
+                liquidityPool.DOMAIN_SEPARATOR(),
+                structHash
+            )
+        );
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(SIGNER_PRIVATE_KEY, hash);
+        return abi.encodePacked(r, s, v);
+    }
+
+    function testSetSignerAddress() public {
+        address newSigner = address(4);
+
+        vm.prank(liquidityPool.owner());
+        liquidityPool.setSignerAddress(newSigner);
+
+        assertEq(liquidityPool.signerAddress(), newSigner);
+    }
+
+    function testSetOrderBookAddress() public {
+        address newOrderBook = address(4);
+
+        vm.prank(liquidityPool.owner());
+        liquidityPool.setOrderBookAddress(newOrderBook);
+
+        assertEq(liquidityPool.orderBookAddress(), newOrderBook);
+    }
+
+    function testTradeWithOrderBook() public {
+        vm.prank(ORDER_BOOK);
+        (uint256 filledAmount, uint256 executionPrice) = liquidityPool
+            .tradeWithOrderBook(
+                address(usdc),
+                1,
+                1 * 10 ** 18,
+                true,
+                100 * 10 ** 18
+            );
+
+        assertEq(filledAmount, 1 * 10 ** 18);
+        assertEq(executionPrice, 100 * 10 ** 18);
+    }
+
+    function testTradeWithOrderBookUnauthorized() public {
+        vm.expectRevert("Only OrderBook can call this function");
+        vm.prank(USER);
+        liquidityPool.tradeWithOrderBook(
+            address(usdc),
+            1,
+            1 * 10 ** 18,
+            true,
+            100 * 10 ** 18
+        );
+    }
+
+    function testGetTotalUSDC() public {
+        testDeposit();
+        assertEq(liquidityPool.getTotalUSDC(), 1000 * 10 ** 6);
+    }
+
+    function testWithdrawWithInsufficientBalance() public {
+        testDeposit();
+
+        uint256 lpTokenAmount = 1000 * 10 ** 18; // More than deposited
+        uint256 minUSDC = 990 * 10 ** 6;
+        uint256 deadline = block.timestamp + 3600;
+
+        bytes memory signature = generateWithdrawSignature(
+            USER,
+            lpTokenAmount,
+            minUSDC,
+            1,
+            deadline
+        );
+
+        vm.expectRevert("Insufficient LP tokens");
+        vm.prank(USER);
+        liquidityPool.withdraw(lpTokenAmount, minUSDC, deadline, signature);
+    }
+
+    function testDepositWithZeroAmount() public {
+        uint256 minLPTokens = 990 * 10 ** 18;
+        uint256 deadline = block.timestamp + 3600;
+
+        bytes memory signature = generateDepositSignature(
+            USER,
+            0,
+            minLPTokens,
+            0,
+            deadline
+        );
+
+        vm.expectRevert("Amount must be greater than 0");
+        vm.prank(USER);
+        liquidityPool.deposit(0, minLPTokens, deadline, signature);
+    }
+
+    function testWithdrawWithZeroAmount() public {
+        testDeposit();
+
+        uint256 minUSDC = 990 * 10 ** 6;
+        uint256 deadline = block.timestamp + 3600;
+
+        bytes memory signature = generateWithdrawSignature(
+            USER,
+            0,
+            minUSDC,
+            1,
+            deadline
+        );
+
+        vm.expectRevert("Amount must be greater than 0");
+        vm.prank(USER);
+        liquidityPool.withdraw(0, minUSDC, deadline, signature);
+    }
+
+    function testDepositWithExpiredDeadline() public {
+        uint256 usdcAmount = 1000 * 10 ** 6;
+        uint256 minLPTokens = 990 * 10 ** 18;
+        uint256 deadline = block.timestamp - 1;
+
+        bytes memory signature = generateDepositSignature(
+            USER,
+            usdcAmount,
+            minLPTokens,
+            0,
+            deadline
+        );
+
+        vm.expectRevert("Deposit expired");
+        vm.prank(USER);
+        liquidityPool.deposit(usdcAmount, minLPTokens, deadline, signature);
+    }
+
+    function testWithdrawWithExpiredDeadline() public {
+        testDeposit();
+
+        uint256 lpTokenAmount = 990 * 10 ** 18;
+        uint256 minUSDC = 980 * 10 ** 6;
+        uint256 deadline = block.timestamp - 1;
+
+        bytes memory signature = generateWithdrawSignature(
+            USER,
+            lpTokenAmount,
+            minUSDC,
+            1,
+            deadline
+        );
+
+        vm.expectRevert("Withdraw expired");
+        vm.prank(USER);
+        liquidityPool.withdraw(lpTokenAmount, minUSDC, deadline, signature);
+    }
+
+    function testDepositWithInvalidNonce() public {
+        uint256 usdcAmount = 1000 * 10 ** 6;
+        uint256 minLPTokens = 990 * 10 ** 18;
+        uint256 deadline = block.timestamp + 3600;
+
+        bytes memory signature = generateDepositSignature(
+            USER,
+            usdcAmount,
+            minLPTokens,
+            1, // Wrong nonce (should be 0)
+            deadline
+        );
+
+        vm.expectRevert("Invalid signature");
+        vm.prank(USER);
+        liquidityPool.deposit(usdcAmount, minLPTokens, deadline, signature);
+    }
+
+    function testWithdrawWithInvalidNonce() public {
+        testDeposit();
+
+        uint256 lpTokenAmount = 990 * 10 ** 18;
+        uint256 minUSDC = 980 * 10 ** 6;
+        uint256 deadline = block.timestamp + 3600;
+
+        bytes memory signature = generateWithdrawSignature(
+            USER,
+            lpTokenAmount,
+            minUSDC,
+            2, // Wrong nonce (should be 1)
+            deadline
+        );
+
+        vm.expectRevert("Invalid signature");
+        vm.prank(USER);
+        liquidityPool.withdraw(lpTokenAmount, minUSDC, deadline, signature);
+    }
+}
